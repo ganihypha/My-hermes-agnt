@@ -18,6 +18,16 @@ just one URL that works on a phone browser.
 - ✅ Default-model fallback (`llama-3.3-70b-versatile`)
 - ✅ Probe compatibility for Hermes Studio (`GET /health`=200, `GET /v1/chat/completions`=405) — so it ALSO works as a backend for a Hermes Studio frontend if you ever want that
 
+## 🔱 God Mode V2 (NEW — edge-native agent upgrade)
+Per canonical `03-ARCHITECTURE` + `00-SSOT` (D-1 Truth-Lock). All real, legal, 100% Cloudflare-deployable. **No** captcha-bypass, **no** TLS-spoof, **no** YOLO auto-actions.
+
+- ✅ **Persistent memory across sessions** (Workers KV `HERMES_MEM`) — save / list / recall / delete
+- ✅ **Auto-recall**: before each chat, relevant past memories (keyword match) are injected as system context so the agent "remembers"
+- ✅ **Web tool**: `POST /api/tools/crawl` → Cloudflare Browser Run → clean markdown → Workers AI summarize/answer (honors robots/ToS)
+- ✅ **Free Workers AI fallback**: send `"model":"@cf/meta/llama-3.1-8b-instruct"` → routes to edge LLM (no key, no Groq quota burn)
+- ✅ **Honest status probe**: `GET /api/status` reports which capabilities are actually wired
+- 🔭 Backlog: Vectorize semantic recall (F5), Browser binding Puppeteer fallback (F6)
+
 ## Functional entry points (URIs)
 | Method | Path | Purpose | Auth |
 |--------|------|---------|------|
@@ -27,7 +37,13 @@ just one URL that works on a phone browser.
 | GET | `/favicon.ico` | Inline SVG icon | none |
 | GET | `/v1/models` | List Groq chat models | `PROXY_TOKEN` if set |
 | GET | `/v1/chat/completions` | Returns 405 (probe) | none |
-| POST | `/v1/chat/completions` | Chat completion, forwards to Groq | `PROXY_TOKEN` if set |
+| POST | `/v1/chat/completions` | Chat completion (Groq or `@cf/*` Workers AI) + memory recall | `PROXY_TOKEN` if set |
+| GET | `/api/status` | Honest capability report (memory/ai/crawl/groq) | none |
+| GET | `/api/memory` | List saved memories (newest first) | `PROXY_TOKEN` if set |
+| POST | `/api/memory` | Save a memory `{text, tags?}` (HITL) | `PROXY_TOKEN` if set |
+| GET | `/api/memory/recall?q=` | Keyword recall topK | `PROXY_TOKEN` if set |
+| DELETE | `/api/memory/:id` | Delete a memory by id | `PROXY_TOKEN` if set |
+| POST | `/api/tools/crawl` | Crawl `{url, question?, summarize?, includeRaw?}` → summary | `PROXY_TOKEN` if set |
 
 Request body for `POST /v1/chat/completions` (standard OpenAI shape):
 ```json
@@ -35,9 +51,18 @@ Request body for `POST /v1/chat/completions` (standard OpenAI shape):
 ```
 `"model": "default"` is rewritten to `DEFAULT_MODEL`.
 
-## Data Architecture
-- **Storage services**: None. Stateless edge Worker. Chat history lives only in the browser tab (in memory); user settings (token/model/system prompt) are stored in browser `localStorage`.
-- **Data flow**: Browser `/chat` → `POST /v1/chat/completions` (this Worker) → Groq API → streamed back to the browser.
+## Data Architecture (God Mode V2)
+- **Storage services**: **Cloudflare Workers KV** (`HERMES_MEM`) for persistent agent memory across sessions. Chat history still lives in the browser tab; settings in `localStorage`.
+- **Memory model** (KV entry): `{ id:"mem:<ts>:<rand>", text, tags[], ts, user }`.
+- **Data flow**: Browser `/chat` → `POST /v1/chat/completions` → [recall relevant KV memories → prepend as system context] → route to Groq **or** `@cf/*` Workers AI → response. Web tool: `/api/tools/crawl` → Browser Run REST → markdown → Workers AI summarize.
+
+### Extra env (God Mode V2)
+| Var | Required | Notes |
+|-----|----------|-------|
+| `CLOUDFLARE_ACCOUNT_ID` | for crawl tool | account id for Browser Run REST |
+| `CF_BROWSER_TOKEN` | for crawl tool | token with Browser Rendering perms |
+
+Bindings (in `wrangler.jsonc`): KV `HERMES_MEM`, AI `AI` (re-enabled at deploy).
 
 ## Environment variables (Cloudflare secrets)
 | Var | Required | Default | Notes |

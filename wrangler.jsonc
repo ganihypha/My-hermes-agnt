@@ -1,34 +1,32 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "webapp",
+  "name": "my-hermes-agnt",
   "compatibility_date": "2026-05-03",
   "pages_build_output_dir": "./dist",
   "compatibility_flags": [
     "nodejs_compat"
-  ]
-  // "vars": {
-  //   "MY_VAR": "my-variable"
-  // },
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "MY_KV_NAMESPACE",
-  //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  //   }
-  // ],
-  // "r2_buckets": [
-  //   {
-  //     "binding": "MY_BUCKET",
-  //     "bucket_name": "my-bucket"
-  //   }
-  // ],
-  // "d1_databases": [
-  //   {
-  //     "binding": "MY_DB",
-  //     "database_name": "my-database",
-  //     "database_id": ""
-  //   }
-  // ],
+  ],
+
+  // Workers AI — free edge LLM (fallback) + bge embeddings (recall, backlog).
+  // NOTE: Workers AI runs remotely; `wrangler pages dev` would need login to proxy it.
+  // For local sandbox dev this is commented out (code degrades gracefully via `if (!env.AI)`).
+  // The cf-byok-deploy skill RE-ENABLES this before production deploy.
   // "ai": {
   //   "binding": "AI"
-  // }
+  // },
+
+  // KV — raw persistent memory across sessions (God Mode V2 core).
+  // Create with: npx wrangler kv namespace create HERMES_MEM
+  //          and npx wrangler kv namespace create HERMES_MEM --preview
+  // then paste the ids below.
+  "kv_namespaces": [
+    {
+      "binding": "HERMES_MEM",
+      "id": "0000000000000000000000000000hmem",
+      "preview_id": "0000000000000000000000000prehmem"
+    }
+  ]
+
+  // Vectorize (semantic recall) + Browser binding are backlog (F5/F6 fallback);
+  // default web tool uses Browser Run REST /crawl via secrets (no binding needed).
 }

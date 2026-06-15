@@ -41,13 +41,17 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { chatPage } from './chat-ui'
+import {
+  type AgentBindings,
+  saveMemory,
+  listMemories,
+  deleteMemory,
+  recallMemories,
+  crawlUrl,
+  summarizeWithWorkersAI,
+} from './agent'
 
-type Bindings = {
-  GROQ_API_KEY: string
-  GROQ_BASE_URL?: string
-  PROXY_TOKEN?: string
-  DEFAULT_MODEL?: string
-}
+type Bindings = AgentBindings
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -168,6 +172,53 @@ app.post('/v1/chat/completions', async (c) => {
   }
 
   const isStream = body.stream === true
+  const modelName = String(body.model || '')
+
+  // -------------------------------------------------------------------------
+  // God Mode V2: semantic-ish recall — if KV memory exists, prepend relevant
+  // memories as a system context message so the agent "remembers" across sessions.
+  // -------------------------------------------------------------------------
+  try {
+    if (c.env.HERMES_MEM && Array.isArray(body.messages)) {
+      const msgs = body.messages as Array<{ role: string; content: string }>
+      const lastUser = [...msgs].reverse().find((m) => m.role === 'user')
+      if (lastUser?.content) {
+        const recalled = await recallMemories(c.env.HERMES_MEM, lastUser.content, 5)
+        if (recalled.length) {
+          const memBlock =
+            'Relevant long-term memories (from previous sessions):\n' +
+            recalled.map((m) => `- ${m.text}${m.tags.length ? ` [${m.tags.join(', ')}]` : ''}`).join('\n')
+          msgs.unshift({ role: 'system', content: memBlock })
+          body.messages = msgs
+        }
+      }
+    }
+  } catch {
+    /* recall is best-effort; never block chat */
+  }
+
+  // -------------------------------------------------------------------------
+  // God Mode V2: free Workers AI fallback. If model starts with "@cf/",
+  // route to Workers AI binding instead of Groq (no key, no quota burn).
+  // -------------------------------------------------------------------------
+  if (modelName.startsWith('@cf/')) {
+    if (!c.env.AI) {
+      return c.json({ error: { message: 'Workers AI (AI binding) not available', type: 'server_error' } }, 500)
+    }
+    try {
+      const res: any = await c.env.AI.run(modelName, { messages: body.messages })
+      const text = res?.response || res?.result?.response || ''
+      return c.json({
+        id: `cf-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: modelName,
+        choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
+      })
+    } catch (e: any) {
+      return c.json({ error: { message: `Workers AI error: ${String(e?.message || e)}`, type: 'server_error' } }, 500)
+    }
+  }
 
   const upstream = await fetch(`${groqBase(c.env)}/chat/completions`, {
     method: 'POST',
@@ -191,6 +242,103 @@ app.post('/v1/chat/completions', async (c) => {
   const headers = new Headers()
   headers.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json')
   return new Response(upstream.body, { status: upstream.status, headers })
+})
+
+// ===========================================================================
+// God Mode V2 — Agent API: persistent memory + web tools (edge-native)
+// All protected by PROXY_TOKEN (same gate as /v1/*).
+// ===========================================================================
+
+// --- Memory: list ---------------------------------------------------------
+app.get('/api/memory', async (c) => {
+  if (!checkAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.HERMES_MEM) return c.json({ error: 'KV (HERMES_MEM) not configured', items: [] }, 200)
+  const items = await listMemories(c.env.HERMES_MEM, 100)
+  return c.json({ count: items.length, items })
+})
+
+// --- Memory: save (HITL — explicit user action) ---------------------------
+app.post('/api/memory', async (c) => {
+  if (!checkAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.HERMES_MEM) return c.json({ error: 'KV (HERMES_MEM) not configured' }, 500)
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+  if (!body?.text || typeof body.text !== 'string') {
+    return c.json({ error: 'Field "text" (string) is required' }, 400)
+  }
+  const entry = await saveMemory(c.env.HERMES_MEM, {
+    text: body.text,
+    tags: Array.isArray(body.tags) ? body.tags : [],
+    user: body.user,
+  })
+  return c.json({ ok: true, entry })
+})
+
+// --- Memory: recall (keyword) --------------------------------------------
+app.get('/api/memory/recall', async (c) => {
+  if (!checkAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.HERMES_MEM) return c.json({ items: [] })
+  const q = c.req.query('q') || ''
+  const items = await recallMemories(c.env.HERMES_MEM, q, 5)
+  return c.json({ query: q, count: items.length, items })
+})
+
+// --- Memory: delete -------------------------------------------------------
+app.delete('/api/memory/:id', async (c) => {
+  if (!checkAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.HERMES_MEM) return c.json({ error: 'KV (HERMES_MEM) not configured' }, 500)
+  // id contains colons (mem:ts:rand) — read raw path segment
+  const id = decodeURIComponent(c.req.path.replace('/api/memory/', ''))
+  await deleteMemory(c.env.HERMES_MEM, id)
+  return c.json({ ok: true, id })
+})
+
+// --- Tool: crawl URL -> clean markdown (+ optional AI summarize/answer) ----
+app.post('/api/tools/crawl', async (c) => {
+  if (!checkAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+  if (!body?.url || typeof body.url !== 'string') {
+    return c.json({ error: 'Field "url" (string) is required' }, 400)
+  }
+  const crawl = await crawlUrl(c.env, body.url)
+  if (!crawl.ok) {
+    return c.json({ ok: false, sourceUrl: body.url, error: crawl.error }, 502)
+  }
+  let summary: string | undefined
+  if (body.summarize !== false) {
+    summary = await summarizeWithWorkersAI(c.env, crawl.markdown || '', body.question)
+  }
+  return c.json({
+    ok: true,
+    sourceUrl: crawl.sourceUrl,
+    summary,
+    markdown: body.includeRaw ? crawl.markdown : undefined,
+  })
+})
+
+// --- Agent capabilities probe (honest status) -----------------------------
+app.get('/api/status', (c) => {
+  return c.json({
+    service: 'hermes-agent',
+    version: 'god-mode-v2',
+    capabilities: {
+      memory_kv: Boolean(c.env.HERMES_MEM),
+      workers_ai: Boolean(c.env.AI),
+      web_crawl: Boolean(c.env.CLOUDFLARE_ACCOUNT_ID && c.env.CF_BROWSER_TOKEN),
+      groq: Boolean(c.env.GROQ_API_KEY),
+      protected: Boolean(c.env.PROXY_TOKEN),
+    },
+    doctrine: 'D-1 Truth-Lock: real edge capabilities only; no captcha-bypass, no YOLO.',
+  })
 })
 
 // ---------------------------------------------------------------------------
