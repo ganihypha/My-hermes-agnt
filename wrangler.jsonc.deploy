@@ -7,38 +7,28 @@
     "nodejs_compat"
   ],
 
-  // Workers AI — free edge LLM (fallback) + bge embeddings (recall, backlog).
-  // Re-enabled for production deploy (runs remotely on CF edge).
+  // Workers AI — free edge LLM (fallback) + bge embeddings (V3 semantic recall).
+  // Enabled for production deploy (runs remotely on CF edge).
   "ai": {
     "binding": "AI"
   },
 
   // KV — raw persistent memory across sessions (God Mode V2 core).
-  // Create with: npx wrangler kv namespace create HERMES_MEM
-  //          and npx wrangler kv namespace create HERMES_MEM --preview
-  // then paste the ids below.
   "kv_namespaces": [
     {
       "binding": "HERMES_MEM",
       "id": "8a114a83951b40e7bb19d92f6ef3bc7a",
       "preview_id": "827872f2152645b89bf2e4970bb58ec6"
     }
-  ]
+  ],
 
   // God Mode V3: Vectorize semantic recall (bge-large 1024d, cosine).
-  // NOTE: Vectorize is REMOTE-ONLY (no local emulation) — it forces wrangler
-  // `pages dev` into remote mode (needs login). So it is DISABLED here for the
-  // sandbox/local build and ENABLED at deploy time by the cf-byok-deploy step.
-  // Code degrades gracefully to KV keyword recall when this index is absent.
-  // Create with:
-  //   npx wrangler vectorize create hermes-memory-index --dimensions=1024 --metric=cosine
-  // Then uncomment:
-  // "vectorize": [
-  //   { "binding": "HERMES_VEC", "index_name": "hermes-memory-index" }
-  // ],
-
-  // Browser Rendering binding (Puppeteer fallback) is optional — default web
-  // tool uses Browser Rendering REST /markdown via secrets (no binding needed).
-  // To enable Puppeteer fallback, install @cloudflare/puppeteer and add:
-  //   "browser": { "binding": "BROWSER" }
+  // Enabled for production deploy. Code degrades gracefully to KV keyword
+  // recall if this index is ever unavailable.
+  "vectorize": [
+    {
+      "binding": "HERMES_VEC",
+      "index_name": "hermes-memory-index"
+    }
+  ]
 }
