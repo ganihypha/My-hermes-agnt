@@ -81,19 +81,21 @@ Local dev uses `.dev.vars` (gitignored). Production uses `wrangler pages secret 
 See `SETUP_GUIDE.md` for the full phone-only deploy + usage walkthrough.
 
 ## Deployment
-- **Platform**: Cloudflare Pages / Workers
-- **Status**: ✅ **LIVE**
+- **Platform**: Cloudflare Pages / Workers (edge, BYOK)
+- **Status**: ✅ **LIVE — God Mode V3 fully wired in production**
 - **Production URL**: https://my-hermes-agnt.pages.dev
 - **Chat UI**: https://my-hermes-agnt.pages.dev/chat
-- **Access token** (PROXY_TOKEN): `hermes-2026-secure-token` — paste in the ⚙️ Settings on first use
+- **Memory dashboard**: https://my-hermes-agnt.pages.dev/memory
+- **Access token** (PROXY_TOKEN): paste in the ⚙️ Settings on first use
 - **Tech Stack**: Hono + TypeScript (Vite build)
-- **CF account**: ganihypha@gmail.com (deployed via cf-byok)
-- **GitHub**: https://github.com/ganihypha/My-hermes-agnt
+- **CF account**: ganihypha@gmail.com (deployed via `sovereign-cf-byok-deploy` skill)
+- **GitHub**: https://github.com/ganihypha/My-hermes-agnt (pushed via `sovereign-github-push` skill)
 - **Worker**: ✅ Built & tested (UI + streaming + non-streaming + probes all pass in production)
-- **God Mode V2**: ✅ LIVE — `/api/status` reports `memory_kv:true, workers_ai:true, groq:true, protected:true` (verified save/recall in production)
-- **KV namespace**: `HERMES_MEM` (`8a114a83...`) bound in production
-- **Enable web crawl tool** (optional): set secrets `CLOUDFLARE_ACCOUNT_ID` + `CF_BROWSER_TOKEN` via `wrangler pages secret put`
-- **Last Updated**: 2026-06-15 (God Mode V2)
+- **God Mode V3**: ✅ LIVE — `/api/status` (prod) reports `memory_kv:true, semantic_recall:true, workers_ai:true, web_crawl_rest:true, agent_tool_loop:true, groq:true, protected:true`
+- **Bindings (prod)**: KV `HERMES_MEM` (`8a114a83...`), Vectorize `hermes-memory-index` (1024d cosine), Workers AI `AI`
+- **Secrets (prod)**: `PROXY_TOKEN`, `GROQ_API_KEY`, `GROQ_BASE_URL`, `DEFAULT_MODEL`, `CLOUDFLARE_ACCOUNT_ID`, `CF_BROWSER_TOKEN` (all set via `wrangler pages secret put`)
+- **Verified 2026-06-15**: live Groq chat → "ALIVE"; chat UI 200; auth gate 401 without token
+- **Last Updated**: 2026-06-15 (God Mode V3 — production deploy + GitHub push via sovereign skills)
 
 ## Not yet done / next steps
 - ⏳ Deploy to Cloudflare (requires your CF API token).
