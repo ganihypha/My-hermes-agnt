@@ -1,69 +1,68 @@
-# Groq-Compat Shim for Hermes Studio
+# Hermes Chat — Groq-powered Cloudflare Worker (UI + API)
+
+A single Cloudflare Worker that is **both** the chat frontend **and** an
+OpenAI-compatible backend for Groq. No Hugging Face, no separate server, no PC —
+just one URL that works on a phone browser.
 
 ## Project Overview
-- **Name**: webapp (Groq-Compat Shim)
-- **Goal**: Give Hermes Studio (running on a Hugging Face Space) a working
-  OpenAI-compatible LLM backend by proxying to **Groq's free API**, while
-  satisfying Hermes Studio's startup probe so it enters "portable mode".
-- **Why a shim is needed**: Hermes Studio probes its backend with
-  `GET /health` (wants 200) and `GET /v1/chat/completions` (wants 405).
-  Groq returns 404 for those and has no `/health`, so Hermes never connects.
-  This shim answers the probes correctly and forwards real traffic to Groq.
+- **Name**: webapp (Hermes Chat shim)
+- **Goal**: A self-contained, phone-friendly AI chat that runs 100% on Cloudflare's edge, using your Groq API key (kept server-side).
+- **Why**: The original Hermes Studio Hugging Face Spaces kept getting auto-flagged "abusive" by HF. This Worker removes the dependency on Hugging Face entirely.
 
-## Architecture
+## Features (completed)
+- ✅ Built-in streaming chat UI at `GET /chat` (Tailwind + vanilla JS, mobile-first, dark theme)
+- ✅ OpenAI-compatible API: `POST /v1/chat/completions` (streaming + non-streaming)
+- ✅ `GET /v1/models` (forwarded to Groq)
+- ✅ Groq API key stays server-side (never in the browser)
+- ✅ Optional access protection via `PROXY_TOKEN`
+- ✅ Default-model fallback (`llama-3.3-70b-versatile`)
+- ✅ Probe compatibility for Hermes Studio (`GET /health`=200, `GET /v1/chat/completions`=405) — so it ALSO works as a backend for a Hermes Studio frontend if you ever want that
+
+## Functional entry points (URIs)
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/` | JSON info page (no secrets) | none |
+| GET | `/chat` | **The chat web app** — open this in your browser/phone | none (UI) |
+| GET | `/health` | Liveness probe → 200 | none |
+| GET | `/favicon.ico` | Inline SVG icon | none |
+| GET | `/v1/models` | List Groq chat models | `PROXY_TOKEN` if set |
+| GET | `/v1/chat/completions` | Returns 405 (probe) | none |
+| POST | `/v1/chat/completions` | Chat completion, forwards to Groq | `PROXY_TOKEN` if set |
+
+Request body for `POST /v1/chat/completions` (standard OpenAI shape):
+```json
+{ "model": "default", "messages": [{"role":"user","content":"Hi"}], "stream": true }
 ```
-Hermes Studio (HF Space)  --HERMES_API_URL-->  This Worker (Cloudflare)  -->  Groq API
-                                               (Groq key stays here,
-                                                never in the Space/browser)
-```
+`"model": "default"` is rewritten to `DEFAULT_MODEL`.
 
-## API Endpoints
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/` | Service info (no secrets) |
-| GET | `/health` | Liveness probe → `200 {"status":"ok"}` |
-| GET | `/v1/chat/completions` | Returns `405` (so the probe registers the endpoint) |
-| POST | `/v1/chat/completions` | Forwards to Groq (streaming + non-streaming) |
-| GET | `/v1/models` | Forwards to Groq model list |
+## Data Architecture
+- **Storage services**: None. Stateless edge Worker. Chat history lives only in the browser tab (in memory); user settings (token/model/system prompt) are stored in browser `localStorage`.
+- **Data flow**: Browser `/chat` → `POST /v1/chat/completions` (this Worker) → Groq API → streamed back to the browser.
 
-`/v1/models` and `POST /v1/chat/completions` require
-`Authorization: Bearer <PROXY_TOKEN>` **if** `PROXY_TOKEN` is configured.
+## Environment variables (Cloudflare secrets)
+| Var | Required | Default | Notes |
+|-----|----------|---------|-------|
+| `GROQ_API_KEY` | ✅ | — | Your `gsk_...` key |
+| `PROXY_TOKEN` | optional | — | If set, callers must send `Authorization: Bearer <PROXY_TOKEN>` |
+| `DEFAULT_MODEL` | optional | `llama-3.3-70b-versatile` | Model used when none/`default` is sent |
+| `GROQ_BASE_URL` | optional | `https://api.groq.com/openai/v1` | Override upstream |
 
-## Environment Variables (Cloudflare secrets)
-| Name | Required | Default | Notes |
-|------|----------|---------|-------|
-| `GROQ_API_KEY` | ✅ | — | Your Groq key (`gsk_...`) |
-| `GROQ_BASE_URL` | ❌ | `https://api.groq.com/openai/v1` | Override upstream |
-| `PROXY_TOKEN` | ❌ | (open) | If set, callers must send it as Bearer token |
-| `DEFAULT_MODEL` | ❌ | `llama-3.3-70b-versatile` | Used when caller sends `"default"` |
+Local dev uses `.dev.vars` (gitignored). Production uses `wrangler pages secret put`.
 
-## Local Development
-```bash
-cd /home/user/webapp
-# .dev.vars holds GROQ_API_KEY / PROXY_TOKEN / DEFAULT_MODEL (gitignored)
-npm run build
-pm2 start ecosystem.config.cjs
-curl http://localhost:3000/health
-```
+## User Guide
+1. Open the deployed URL + `/chat` (e.g. `https://your-worker.pages.dev/chat`).
+2. If you set a `PROXY_TOKEN`, tap the gear ⚙️ → paste the token → Save.
+3. Type a message and send. Replies stream in live. Works on phone.
+See `SETUP_GUIDE.md` for the full phone-only deploy + usage walkthrough.
 
-## Deployment (Cloudflare Pages)
-Requires a Cloudflare API token (entered in the Deploy panel). Then:
-```bash
-npm run build
-npx wrangler pages deploy dist --project-name <project>
-# Set secrets:
-npx wrangler pages secret put GROQ_API_KEY --project-name <project>
-npx wrangler pages secret put PROXY_TOKEN  --project-name <project>
-```
-
-## Wiring it into the HF Space
-On the HF Space → Settings → Variables and secrets:
-- `HERMES_API_URL = https://<your-worker>.pages.dev`
-- `HERMES_API_TOKEN = <your PROXY_TOKEN>`
-- `HERMES_DEFAULT_MODEL = llama-3.3-70b-versatile`
-
-## Status
-- **Worker**: ✅ Built & tested locally (all probes + streaming + non-streaming pass)
-- **Cloudflare deploy**: ⏳ Pending user's Cloudflare API token
-- **Tech Stack**: Hono + TypeScript on Cloudflare Pages/Workers
+## Deployment
+- **Platform**: Cloudflare Pages / Workers
+- **Tech Stack**: Hono + TypeScript (Vite build)
+- **Worker**: ✅ Built & tested (UI + streaming + non-streaming + probes all pass)
+- **Cloudflare deploy**: ⏳ Pending — needs your Cloudflare API token (via the Deploy panel / cf-byok)
 - **Last Updated**: 2026-06-15
+
+## Not yet done / next steps
+- ⏳ Deploy to Cloudflare (requires your CF API token).
+- 🔁 Optional: add markdown rendering & code-copy buttons in the chat UI.
+- 🔁 Optional: model picker dropdown populated from `/v1/models`.

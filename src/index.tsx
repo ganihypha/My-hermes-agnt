@@ -40,6 +40,7 @@
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { chatPage } from './chat-ui'
 
 type Bindings = {
   GROQ_API_KEY: string
@@ -83,6 +84,7 @@ app.get('/', (c) => {
     service: 'groq-compat-shim',
     description: 'OpenAI-compatible Groq proxy for Hermes Studio portable mode',
     endpoints: {
+      chat_ui: 'GET /chat   (open this in your browser/phone)',
       health: 'GET /health',
       models: 'GET /v1/models',
       chat: 'POST /v1/chat/completions',
@@ -91,6 +93,21 @@ app.get('/', (c) => {
     default_model: c.env.DEFAULT_MODEL || DEFAULT_MODEL,
     protected: Boolean(c.env.PROXY_TOKEN),
   })
+})
+
+// ---------------------------------------------------------------------------
+// Built-in chat UI (no Hugging Face needed). Phone/browser friendly.
+// Talks to this same Worker's /v1/chat/completions. The Groq key stays
+// server-side; the page only needs PROXY_TOKEN (if you set one).
+// ---------------------------------------------------------------------------
+app.get('/chat', (c) =>
+  c.html(chatPage({ defaultModel: c.env.DEFAULT_MODEL || DEFAULT_MODEL, protected: Boolean(c.env.PROXY_TOKEN) }))
+)
+
+// Tiny inline favicon (feather emoji) so browsers don't log a 404.
+app.get('/favicon.ico', (c) => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="84" font-size="84">🪶</text></svg>`
+  return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } })
 })
 
 // Health probe -> always 200 (this is what the Hermes probe wants).
