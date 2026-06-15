@@ -8,12 +8,10 @@
   ],
 
   // Workers AI — free edge LLM (fallback) + bge embeddings (recall, backlog).
-  // NOTE: Workers AI runs remotely; `wrangler pages dev` would need login to proxy it.
-  // For local sandbox dev this is commented out (code degrades gracefully via `if (!env.AI)`).
-  // The cf-byok-deploy skill RE-ENABLES this before production deploy.
-  // "ai": {
-  //   "binding": "AI"
-  // },
+  // Re-enabled for production deploy (runs remotely on CF edge).
+  "ai": {
+    "binding": "AI"
+  },
 
   // KV — raw persistent memory across sessions (God Mode V2 core).
   // Create with: npx wrangler kv namespace create HERMES_MEM
@@ -22,8 +20,8 @@
   "kv_namespaces": [
     {
       "binding": "HERMES_MEM",
-      "id": "0000000000000000000000000000hmem",
-      "preview_id": "0000000000000000000000000prehmem"
+      "id": "8a114a83951b40e7bb19d92f6ef3bc7a",
+      "preview_id": "827872f2152645b89bf2e4970bb58ec6"
     }
   ]
 

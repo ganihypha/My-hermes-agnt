@@ -90,7 +90,10 @@ See `SETUP_GUIDE.md` for the full phone-only deploy + usage walkthrough.
 - **CF account**: ganihypha@gmail.com (deployed via cf-byok)
 - **GitHub**: https://github.com/ganihypha/My-hermes-agnt
 - **Worker**: ✅ Built & tested (UI + streaming + non-streaming + probes all pass in production)
-- **Last Updated**: 2026-06-15
+- **God Mode V2**: ✅ LIVE — `/api/status` reports `memory_kv:true, workers_ai:true, groq:true, protected:true` (verified save/recall in production)
+- **KV namespace**: `HERMES_MEM` (`8a114a83...`) bound in production
+- **Enable web crawl tool** (optional): set secrets `CLOUDFLARE_ACCOUNT_ID` + `CF_BROWSER_TOKEN` via `wrangler pages secret put`
+- **Last Updated**: 2026-06-15 (God Mode V2)
 
 ## Not yet done / next steps
 - ⏳ Deploy to Cloudflare (requires your CF API token).
