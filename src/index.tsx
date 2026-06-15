@@ -40,15 +40,20 @@
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { chatPage } from './chat-ui'
+import { chatPage, memoryPage } from './chat-ui'
 import {
   type AgentBindings,
+  type ToolCall,
+  type AgentStep,
   saveMemory,
   listMemories,
   deleteMemory,
   recallMemories,
   crawlUrl,
   summarizeWithWorkersAI,
+  executeTool,
+  AGENT_TOOLS,
+  OPERATOR_SYSTEM_PROMPT,
 } from './agent'
 
 type Bindings = AgentBindings
@@ -107,6 +112,9 @@ app.get('/', (c) => {
 app.get('/chat', (c) =>
   c.html(chatPage({ defaultModel: c.env.DEFAULT_MODEL || DEFAULT_MODEL, protected: Boolean(c.env.PROXY_TOKEN) }))
 )
+
+// God Mode V3: memory dashboard
+app.get('/memory', (c) => c.html(memoryPage({ protected: Boolean(c.env.PROXY_TOKEN) })))
 
 // Tiny inline favicon (feather emoji) so browsers don't log a 404.
 app.get('/favicon.ico', (c) => {
@@ -183,7 +191,7 @@ app.post('/v1/chat/completions', async (c) => {
       const msgs = body.messages as Array<{ role: string; content: string }>
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user')
       if (lastUser?.content) {
-        const recalled = await recallMemories(c.env.HERMES_MEM, lastUser.content, 5)
+        const { items: recalled } = await recallMemories(c.env, lastUser.content, 5)
         if (recalled.length) {
           const memBlock =
             'Relevant long-term memories (from previous sessions):\n' +
@@ -270,7 +278,7 @@ app.post('/api/memory', async (c) => {
   if (!body?.text || typeof body.text !== 'string') {
     return c.json({ error: 'Field "text" (string) is required' }, 400)
   }
-  const entry = await saveMemory(c.env.HERMES_MEM, {
+  const entry = await saveMemory(c.env, {
     text: body.text,
     tags: Array.isArray(body.tags) ? body.tags : [],
     user: body.user,
@@ -283,8 +291,8 @@ app.get('/api/memory/recall', async (c) => {
   if (!checkAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
   if (!c.env.HERMES_MEM) return c.json({ items: [] })
   const q = c.req.query('q') || ''
-  const items = await recallMemories(c.env.HERMES_MEM, q, 5)
-  return c.json({ query: q, count: items.length, items })
+  const { items, mode } = await recallMemories(c.env, q, 5)
+  return c.json({ query: q, mode, count: items.length, items })
 })
 
 // --- Memory: delete -------------------------------------------------------
@@ -293,7 +301,7 @@ app.delete('/api/memory/:id', async (c) => {
   if (!c.env.HERMES_MEM) return c.json({ error: 'KV (HERMES_MEM) not configured' }, 500)
   // id contains colons (mem:ts:rand) — read raw path segment
   const id = decodeURIComponent(c.req.path.replace('/api/memory/', ''))
-  await deleteMemory(c.env.HERMES_MEM, id)
+  await deleteMemory(c.env, id)
   return c.json({ ok: true, id })
 })
 
@@ -325,19 +333,129 @@ app.post('/api/tools/crawl', async (c) => {
   })
 })
 
+// ===========================================================================
+// God Mode V3 — Agent tool-loop (bounded self-healing, HITL).
+// LLM decides whether to call tools (recall/crawl/save), we run them server-side
+// with retry, feed results back, then return the final answer + step log.
+// Honest edge state-machine — NOT a global multi-worker swarm.
+// ===========================================================================
+app.post('/api/agent', async (c) => {
+  if (!checkAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.GROQ_API_KEY) return c.json({ error: 'GROQ_API_KEY not configured' }, 500)
+
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+  const incoming = (Array.isArray(body?.messages) ? body.messages : []) as Array<{ role: string; content: string }>
+  if (!incoming.length) return c.json({ error: 'messages required' }, 400)
+
+  const model = (body.model && !String(body.model).startsWith('@cf/')) ? body.model : (c.env.DEFAULT_MODEL || DEFAULT_MODEL)
+  const steps: AgentStep[] = []
+
+  // Auto-recall relevant memories for the chips/context (read-only, safe).
+  let recalledTexts: string[] = []
+  try {
+    const lastUser = [...incoming].reverse().find((m) => m.role === 'user')
+    if (lastUser?.content) {
+      const { items } = await recallMemories(c.env, lastUser.content, 4)
+      recalledTexts = items.map((m) => m.text)
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  // Build the conversation with operator prompt + recall context.
+  const sysParts = [OPERATOR_SYSTEM_PROMPT]
+  if (body.system && String(body.system).trim()) sysParts.push(String(body.system).trim())
+  if (recalledTexts.length) sysParts.push('Relevant long-term memories:\n' + recalledTexts.map((t) => `- ${t}`).join('\n'))
+
+  const convo: any[] = [{ role: 'system', content: sysParts.join('\n\n') }, ...incoming]
+
+  // Bounded tool-loop (max 4 rounds; each tool has its own internal retry).
+  const MAX_ROUNDS = 4
+  let finalAnswer = ''
+  try {
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      const upstream = await fetch(`${groqBase(c.env)}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${c.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: convo,
+          tools: AGENT_TOOLS.map((t) => ({ type: 'function', function: t })),
+          tool_choice: 'auto',
+          temperature: 0.3,
+        }),
+      })
+      if (!upstream.ok) {
+        const t = await upstream.text()
+        return c.json({ error: `LLM error ${upstream.status}: ${t.slice(0, 200)}`, steps }, 502)
+      }
+      const data: any = await upstream.json()
+      const msg = data?.choices?.[0]?.message
+      if (!msg) return c.json({ error: 'No message from LLM', steps }, 502)
+
+      const toolCalls = msg.tool_calls as Array<{ id: string; function: { name: string; arguments: string } }> | undefined
+      if (!toolCalls || !toolCalls.length) {
+        finalAnswer = msg.content || ''
+        break
+      }
+
+      // Record assistant tool-call turn, then execute each tool.
+      convo.push(msg)
+      for (const tc of toolCalls) {
+        let args: Record<string, any> = {}
+        try {
+          args = JSON.parse(tc.function.arguments || '{}')
+        } catch {
+          /* malformed args -> empty */
+        }
+        steps.push({ type: 'tool_call', tool: tc.function.name, detail: JSON.stringify(args).slice(0, 120) })
+        const call: ToolCall = { name: tc.function.name, arguments: args }
+        const { result, step } = await executeTool(c.env, call)
+        steps.push(step)
+        convo.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: result })
+      }
+      // loop continues -> LLM gets tool results and may answer or call again
+      if (round === MAX_ROUNDS - 1) {
+        // last round: force a final synthesis without tools
+        const fin = await fetch(`${groqBase(c.env)}/chat/completions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${c.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, messages: convo, temperature: 0.3 }),
+        })
+        const fdata: any = await fin.json().catch(() => ({}))
+        finalAnswer = fdata?.choices?.[0]?.message?.content || '(reached tool-loop limit)'
+      }
+    }
+  } catch (e: any) {
+    return c.json({ error: `Agent loop error: ${String(e?.message || e)}`, steps }, 500)
+  }
+
+  return c.json({ answer: finalAnswer, steps, recalled: recalledTexts })
+})
+
 // --- Agent capabilities probe (honest status) -----------------------------
 app.get('/api/status', (c) => {
   return c.json({
     service: 'hermes-agent',
-    version: 'god-mode-v2',
+    version: 'god-mode-v3',
     capabilities: {
       memory_kv: Boolean(c.env.HERMES_MEM),
+      semantic_recall: Boolean(c.env.HERMES_VEC && c.env.AI),
       workers_ai: Boolean(c.env.AI),
-      web_crawl: Boolean(c.env.CLOUDFLARE_ACCOUNT_ID && c.env.CF_BROWSER_TOKEN),
+      web_crawl_rest: Boolean(c.env.CLOUDFLARE_ACCOUNT_ID && c.env.CF_BROWSER_TOKEN),
+      web_crawl_puppeteer: Boolean(c.env.BROWSER),
+      agent_tool_loop: true,
       groq: Boolean(c.env.GROQ_API_KEY),
       protected: Boolean(c.env.PROXY_TOKEN),
     },
-    doctrine: 'D-1 Truth-Lock: real edge capabilities only; no captcha-bypass, no YOLO.',
+    tools: AGENT_TOOLS.map((t) => t.name),
+    doctrine:
+      'D-1 Truth-Lock: real edge capabilities only. No captcha-bypass, no TLS-spoof, no YOLO. Risky writes are HITL.',
   })
 })
 

@@ -7,11 +7,11 @@
     "nodejs_compat"
   ],
 
-  // Workers AI — free edge LLM (fallback) + bge embeddings (recall).
-  // NOTE: AI binding always runs in REMOTE mode (needs login), so it is
-  // DISABLED for sandbox/local testing and re-enabled at deploy via
-  // wrangler.jsonc.deploy. Code degrades gracefully (Groq still works locally).
-  // "ai": { "binding": "AI" },
+  // Workers AI — free edge LLM (fallback) + bge embeddings (recall, backlog).
+  // Re-enabled for production deploy (runs remotely on CF edge).
+  "ai": {
+    "binding": "AI"
+  },
 
   // KV — raw persistent memory across sessions (God Mode V2 core).
   // Create with: npx wrangler kv namespace create HERMES_MEM

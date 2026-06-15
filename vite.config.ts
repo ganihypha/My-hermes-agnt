@@ -10,5 +10,12 @@ export default defineConfig({
       adapter,
       entry: 'src/index.tsx'
     })
-  ]
+  ],
+  build: {
+    rollupOptions: {
+      // Optional Puppeteer fallback — resolved only at deploy if installed.
+      // Externalized so the build never fails when the dep is absent.
+      external: ['@cloudflare/puppeteer']
+    }
+  }
 })
