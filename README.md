@@ -57,9 +57,14 @@ See `SETUP_GUIDE.md` for the full phone-only deploy + usage walkthrough.
 
 ## Deployment
 - **Platform**: Cloudflare Pages / Workers
+- **Status**: ✅ **LIVE**
+- **Production URL**: https://my-hermes-agnt.pages.dev
+- **Chat UI**: https://my-hermes-agnt.pages.dev/chat
+- **Access token** (PROXY_TOKEN): `hermes-2026-secure-token` — paste in the ⚙️ Settings on first use
 - **Tech Stack**: Hono + TypeScript (Vite build)
-- **Worker**: ✅ Built & tested (UI + streaming + non-streaming + probes all pass)
-- **Cloudflare deploy**: ⏳ Pending — needs your Cloudflare API token (via the Deploy panel / cf-byok)
+- **CF account**: ganihypha@gmail.com (deployed via cf-byok)
+- **GitHub**: https://github.com/ganihypha/My-hermes-agnt
+- **Worker**: ✅ Built & tested (UI + streaming + non-streaming + probes all pass in production)
 - **Last Updated**: 2026-06-15
 
 ## Not yet done / next steps
